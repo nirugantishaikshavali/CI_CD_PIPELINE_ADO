@@ -499,6 +499,41 @@ steps:
   - bash: |
 
       echo "===================================="
+      echo "GIT DEBUG INFORMATION"
+      echo "===================================="
+
+      echo "Current commit:"
+      git log -1 --oneline
+
+      echo ""
+      echo "Recent commits:"
+      git log --oneline -10
+
+      echo ""
+      echo "Delta FROM:"
+      echo "$(DELTA_FROM)"
+
+      echo ""
+      echo "Delta TO:"
+      echo "HEAD"
+
+      echo ""
+      echo "Changed files between FROM and HEAD:"
+      git diff --name-status "$(DELTA_FROM)" HEAD
+
+      echo ""
+      echo "Changes inside force-app:"
+      git diff --name-status "$(DELTA_FROM)" HEAD -- force-app
+
+      echo ""
+      echo "Git status:"
+      git status
+
+    displayName: Debug Git Delta
+
+  - bash: |
+
+      echo "===================================="
       echo "Generating Salesforce Delta"
       echo "===================================="
 

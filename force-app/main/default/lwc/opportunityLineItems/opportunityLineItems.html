@@ -1,0 +1,38 @@
+<template>
+
+    <template lwc:if={hasOpportunityLineItem}>
+        <lightning-datatable
+    key-field="Id"
+    data={oppLineRecords}
+    columns={columns}
+    sorted-by={sortField}
+    sorted-direction={sortDirection}
+    onsort={handleSort}>
+</lightning-datatable>
+        <div class="slds-m-around_medium slds-align_absolute-center">
+
+    <lightning-button
+        label="Previous"
+        onclick={handlePrevious}
+        disabled={isPreviousDisabled}>
+    </lightning-button>
+
+    <span class="slds-m-horizontal_medium">
+        Page {currentPage} of {totalPages}
+    </span>
+
+    <lightning-button
+        label="Next"
+        onclick={handleNext}
+        disabled={isNextDisabled}>
+    </lightning-button>
+
+</div>
+    </template>
+
+    <template lwc:else>
+        <p>No Opportunity Records</p>
+    </template>
+    
+    
+</template>

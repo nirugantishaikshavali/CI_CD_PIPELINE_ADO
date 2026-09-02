@@ -1,0 +1,16 @@
+<template>
+
+    <lightning-card title="Opportunity Line Items">
+
+        <lightning-datatable
+            key-field="Id"
+            data={oppLineRecords}
+            columns={columns}
+            enable-infinite-loading
+            onloadmore={handleLoadMore}
+            is-loading={isLoading}>
+        </lightning-datatable>
+
+    </lightning-card>
+
+</template>

@@ -467,18 +467,23 @@ steps:
 
         echo "Push build detected."
 
+        # For a merge commit, compare the first parent
+        # with the current commit.
+        DELTA_FROM="$(git rev-parse HEAD^1)"
 
-        echo "##vso[task.setvariable variable=DELTA_FROM]HEAD~1"
+        echo "##vso[task.setvariable variable=DELTA_FROM]$DELTA_FROM"
 
 
         echo "===================================="
         echo "Delta Comparison"
         echo "===================================="
 
-        echo "FROM = HEAD~1"
+        echo "FROM = $DELTA_FROM"
         echo "TO   = HEAD"
 
       fi
+
+      
 
     displayName: Determine Delta Baseline
 

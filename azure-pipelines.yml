@@ -95,7 +95,6 @@ steps:
   - checkout: self
     fetchDepth: 0
     clean: true
-    persistCredentials: true
 
     displayName: Checkout Full Git History
 

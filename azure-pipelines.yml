@@ -469,7 +469,7 @@ steps:
 
         # For a merge commit, compare the first parent
         # with the current commit.
-        DELTA_FROM="7811919"
+        DELTA_FROM="$(git rev-parse HEAD^1)"
 
         echo "##vso[task.setvariable variable=DELTA_FROM]$DELTA_FROM"
 

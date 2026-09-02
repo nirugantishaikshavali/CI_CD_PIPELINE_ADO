@@ -8,5 +8,5 @@
   "name": "Azure Ci/Cd pipelines",
   "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
-  "sourceApiVersion": "68.0"
+  "sourceApiVersion": "66.0"
 }

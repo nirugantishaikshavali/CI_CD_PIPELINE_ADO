@@ -1,715 +1,789 @@
 # ================================================================
-# SALESFORCE CI/CD PIPELINE
+# Salesforce CI/CD Pipeline
 #
-# FLOW:
-#
-# Developer Feature Branch
-#          ↓
-#        Pull Request
-#          ↓
-#     Azure Validation
-#          ↓
-#     Manager Approval
-#          ↓
-#        PR Merge
-#          ↓
-#     Azure Deployment
-#          ↓
-#       Salesforce
-#
+# Repository : GitHub
+# CI/CD      : Azure DevOps
+# Authentication : JWT
+# Delta Tool : SFDX Git Delta
 #
 # BRANCH → SALESFORCE ORG
 #
 # develop → DEV
-# sit     → SIT
-# uat     → UAT
+# SIT     → SIT
+# UAT     → UAT
 # main    → PROD
+#
+# FLOW
+#
+# Feature Branch
+#       |
+#       v
+# Pull Request
+#       |
+#       v
+# PR Validation
+#       |
+#       +--> JWT Authentication
+#       |
+#       +--> Generate Delta
+#       |
+#       +--> Salesforce Validation
+#       |
+#       +--> Apex Tests
+#       |
+#       v
+# PR Approved
+#       |
+#       v
+# PR MERGED
+#       |
+#       v
+# Actual Deployment
+#
 # ================================================================
 
 
 # ================================================================
-# 1. TRIGGERS
+# CI TRIGGER
+#
+# Pipeline runs after changes are pushed to these branches.
 # ================================================================
 
 trigger:
   branches:
     include:
       - develop
-      - sit
-      - uat
+      - SIT
+      - UAT
       - main
+
+
+# ================================================================
+# PR TRIGGER
+#
+# Pipeline runs when a PR targets:
+# develop / SIT / UAT / main
+#
+# Because your repository is GitHub, Azure DevOps supports YAML
+# PR triggers for GitHub repositories.
+# ================================================================
 
 pr:
   branches:
     include:
       - develop
-      - sit
-      - uat
+      - SIT
+      - UAT
       - main
+
+  autoCancel: true
 
 
 # ================================================================
-# 2. VARIABLES
+# VARIABLE GROUP
 #
 # Azure DevOps:
-# Pipelines
-#   → Library
-#   → Variable Groups
+# Library
+#   |
+#   +-- Variable groups
+#          |
+#          +-- Salesforce-CICD-Secrets
 #
-# Variable Group:
-# Salesforce-CICD-Secrets
+# Contains:
 #
-# Required variables:
-#
-# SF_USERNAME_DEV
 # SF_CLIENT_ID_DEV
-#
-# SF_USERNAME_SIT
 # SF_CLIENT_ID_SIT
-#
-# SF_USERNAME_UAT
 # SF_CLIENT_ID_UAT
-#
-# SF_USERNAME_PROD
 # SF_CLIENT_ID_PROD
 #
+# SF_USERNAME_DEV
+# SF_USERNAME_SIT
+# SF_USERNAME_UAT
+# SF_USERNAME_PROD
 # ================================================================
 
 variables:
-
   - group: Salesforce-CICD-Secrets
 
-  - name: SGD_VERSION
-    value: latest
+  - name: NODE_VERSION
+    value: '22.x'
+
+  - name: SF_ALIAS
+    value: 'target-org'
 
 
 # ================================================================
-# 3. AGENT
+# BUILD AGENT
 # ================================================================
 
 pool:
-  vmImage: ubuntu-latest
+  vmImage: 'ubuntu-latest'
 
 
 # ================================================================
-# 4. CHECKOUT FULL GIT HISTORY
+# JOB
 # ================================================================
 
-steps:
+jobs:
 
-  - checkout: self
-    fetchDepth: 0
-    clean: true
+  - job: Salesforce_CICD
 
-    displayName: Checkout Full Git History
+    displayName: 'Salesforce CI/CD Pipeline'
 
+    steps:
 
-# ================================================================
-# 5. INSTALL NODE.JS
-# ================================================================
+      # ==========================================================
+      # STEP 1
+      # CHECKOUT FULL GIT HISTORY
+      #
+      # SGD needs Git history to compare commits.
+      # ==========================================================
 
-  - task: UseNode@1
-    inputs:
-      version: '22.x'
+      - checkout: self
+        fetchDepth: 0
 
-    displayName: Install Node.js
+        displayName: 'Checkout Full Git History'
 
 
-# ================================================================
-# 6. INSTALL SALESFORCE CLI
-# ================================================================
+      # ==========================================================
+      # STEP 2
+      # INSTALL NODE.JS
+      # ==========================================================
 
-  - bash: |
+      - task: NodeTool@0
 
-      echo "===================================="
-      echo "Installing Salesforce CLI"
-      echo "===================================="
+        displayName: 'Install Node.js'
 
-      npm install --global @salesforce/cli
+        inputs:
+          versionSpec: '$(NODE_VERSION)'
 
-      echo "===================================="
-      echo "Salesforce CLI Version"
-      echo "===================================="
 
-      sf --version
+      # ==========================================================
+      # STEP 3
+      # INSTALL SALESFORCE CLI
+      # ==========================================================
 
-    displayName: Install Salesforce CLI
+      - bash: |
 
+          npm install --global @salesforce/cli
 
-# ================================================================
-# 7. INSTALL SFDX-GIT-DELTA
-# ================================================================
+          echo "Salesforce CLI version:"
+          sf --version
 
-  - bash: |
+        displayName: 'Install Salesforce CLI'
 
-      echo "===================================="
-      echo "Installing sfdx-git-delta"
-      echo "===================================="
 
-      echo y | sf plugins install sfdx-git-delta@$(SGD_VERSION)
+      # ==========================================================
+      # STEP 4
+      # INSTALL SFDX GIT DELTA
+      # ==========================================================
 
-      echo "===================================="
-      echo "Installed Plugins"
-      echo "===================================="
+      - bash: |
 
-      sf plugins
+          echo "Installing SFDX Git Delta..."
 
-    displayName: Install sfdx-git-delta
+          echo y | sf plugins install sfdx-git-delta
 
+          echo "Installed plugins:"
+          sf plugins
 
-# ================================================================
-# 8. DETERMINE TARGET ENVIRONMENT
-# ================================================================
+        displayName: 'Install SFDX Git Delta'
 
-  - bash: |
 
-      echo "===================================="
-      echo "Branch Information"
-      echo "===================================="
+      # ==========================================================
+      # STEP 5
+      # DOWNLOAD JWT PRIVATE KEY
+      #
+      # Azure DevOps Library:
+      #
+      # Secure files
+      #      |
+      #      +-- server.key
+      #
+      # The file is downloaded to the build agent temporarily.
+      # Azure DevOps deletes it after the job completes.
+      # ==========================================================
 
-      echo "Build.SourceBranch:"
-      echo "$(Build.SourceBranch)"
+      - task: DownloadSecureFile@1
 
-      echo "System.PullRequest.TargetBranch:"
-      echo "$(System.PullRequest.TargetBranch)"
+        name: jwtKey
 
-      echo "Build.Reason:"
-      echo "$(Build.Reason)"
+        displayName: 'Download Salesforce JWT Private Key'
 
+        inputs:
+          secureFile: 'server.key'
 
-      # ------------------------------------------------------------
-      # Determine target branch
-      # ------------------------------------------------------------
 
-      if [ "$(Build.Reason)" = "PullRequest" ]; then
+      # ==========================================================
+      # STEP 6
+      # DETERMINE TARGET ENVIRONMENT
+      #
+      # PR:
+      #
+      # System.PullRequest.TargetBranch
+      #
+      # Normal push:
+      #
+      # Build.SourceBranch
+      #
+      # ==========================================================
 
-        TARGET_BRANCH="$(System.PullRequest.TargetBranch)"
-        TARGET_BRANCH="${TARGET_BRANCH#refs/heads/}"
+      - bash: |
 
-      else
+          echo "========================================="
+          echo "Determining Salesforce Environment"
+          echo "========================================="
 
-        TARGET_BRANCH="$(Build.SourceBranch)"
-        TARGET_BRANCH="${TARGET_BRANCH#refs/heads/}"
+          echo "Build Reason:"
+          echo "$(Build.Reason)"
 
-      fi
+          echo "Source Branch:"
+          echo "$(Build.SourceBranch)"
 
+          echo "PR Target Branch:"
+          echo "$(System.PullRequest.TargetBranch)"
 
-      echo "Target Branch = $TARGET_BRANCH"
 
+          if [ "$(Build.Reason)" = "PullRequest" ]; then
 
-      # ------------------------------------------------------------
-      # DEV
-      # ------------------------------------------------------------
+            TARGET_BRANCH="$(System.PullRequest.TargetBranch)"
 
-      if [ "$TARGET_BRANCH" = "develop" ]; then
+          else
 
-        echo "Environment = DEV"
+            TARGET_BRANCH="$(Build.SourceBranch)"
 
-        echo "##vso[task.setvariable variable=ENV_NAME]DEV"
+          fi
 
-        echo "##vso[task.setvariable variable=TEST_LEVEL]NoTestRun"
 
-        echo "##vso[task.setvariable variable=INSTANCE_URL]https://test.salesforce.com"
+          # Remove refs/heads/ if present
+          TARGET_BRANCH="${TARGET_BRANCH#refs/heads/}"
 
-        echo "##vso[task.setvariable variable=SF_USERNAME;issecret=true]$(SF_USERNAME_DEV)"
 
-        echo "##vso[task.setvariable variable=SF_CLIENT_ID;issecret=true]$(SF_CLIENT_ID_DEV)"
+          echo "Target Branch = $TARGET_BRANCH"
 
 
-      # ------------------------------------------------------------
-      # SIT
-      # ------------------------------------------------------------
+          case "$TARGET_BRANCH" in
 
-      elif [ "$TARGET_BRANCH" = "sit" ]; then
+            develop)
 
-        echo "Environment = SIT"
+              echo "##vso[task.setvariable variable=ENV_NAME]DEV"
 
-        echo "##vso[task.setvariable variable=ENV_NAME]SIT"
+              # Actual DEV deployment
+              echo "##vso[task.setvariable variable=DEPLOY_TEST_LEVEL]NoTestRun"
 
-        echo "##vso[task.setvariable variable=TEST_LEVEL]RunLocalTests"
+              # PR validation always runs tests
+              echo "##vso[task.setvariable variable=PR_TEST_LEVEL]RunLocalTests"
 
-        echo "##vso[task.setvariable variable=INSTANCE_URL]https://test.salesforce.com"
+              echo "##vso[task.setvariable variable=INSTANCE_URL]https://test.salesforce.com"
 
-        echo "##vso[task.setvariable variable=SF_USERNAME;issecret=true]$(SF_USERNAME_SIT)"
+              ;;
 
-        echo "##vso[task.setvariable variable=SF_CLIENT_ID;issecret=true]$(SF_CLIENT_ID_SIT)"
 
+            SIT)
 
-      # ------------------------------------------------------------
-      # UAT
-      # ------------------------------------------------------------
+              echo "##vso[task.setvariable variable=ENV_NAME]SIT"
 
-      elif [ "$TARGET_BRANCH" = "uat" ]; then
+              echo "##vso[task.setvariable variable=DEPLOY_TEST_LEVEL]RunLocalTests"
 
-        echo "Environment = UAT"
+              echo "##vso[task.setvariable variable=PR_TEST_LEVEL]RunLocalTests"
 
-        echo "##vso[task.setvariable variable=ENV_NAME]UAT"
+              echo "##vso[task.setvariable variable=INSTANCE_URL]https://test.salesforce.com"
 
-        echo "##vso[task.setvariable variable=TEST_LEVEL]RunLocalTests"
+              ;;
 
-        echo "##vso[task.setvariable variable=INSTANCE_URL]https://test.salesforce.com"
 
-        echo "##vso[task.setvariable variable=SF_USERNAME;issecret=true]$(SF_USERNAME_UAT)"
+            UAT)
 
-        echo "##vso[task.setvariable variable=SF_CLIENT_ID;issecret=true]$(SF_CLIENT_ID_UAT)"
+              echo "##vso[task.setvariable variable=ENV_NAME]UAT"
 
+              echo "##vso[task.setvariable variable=DEPLOY_TEST_LEVEL]RunLocalTests"
 
-      # ------------------------------------------------------------
-      # PROD
-      # ------------------------------------------------------------
+              echo "##vso[task.setvariable variable=PR_TEST_LEVEL]RunLocalTests"
 
-      elif [ "$TARGET_BRANCH" = "main" ]; then
+              echo "##vso[task.setvariable variable=INSTANCE_URL]https://test.salesforce.com"
 
-        echo "Environment = PROD"
+              ;;
 
-        echo "##vso[task.setvariable variable=ENV_NAME]PROD"
 
-        echo "##vso[task.setvariable variable=TEST_LEVEL]RunAllTestsInOrg"
+            main)
 
-        echo "##vso[task.setvariable variable=INSTANCE_URL]https://login.salesforce.com"
+              echo "##vso[task.setvariable variable=ENV_NAME]PROD"
 
-        echo "##vso[task.setvariable variable=SF_USERNAME;issecret=true]$(SF_USERNAME_PROD)"
+              echo "##vso[task.setvariable variable=DEPLOY_TEST_LEVEL]RunAllTestsInOrg"
 
-        echo "##vso[task.setvariable variable=SF_CLIENT_ID;issecret=true]$(SF_CLIENT_ID_PROD)"
+              echo "##vso[task.setvariable variable=PR_TEST_LEVEL]RunAllTestsInOrg"
 
+              echo "##vso[task.setvariable variable=INSTANCE_URL]https://login.salesforce.com"
 
-      else
+              ;;
 
-        echo "ERROR: Unsupported branch: $TARGET_BRANCH"
 
-        exit 1
+            *)
 
-      fi
+              echo "ERROR: Unsupported branch."
 
+              exit 1
 
-      echo "===================================="
-      echo "Selected Environment"
-      echo "===================================="
+              ;;
 
-      echo "Environment: $(ENV_NAME)"
-      echo "Test Level: $(TEST_LEVEL)"
-      echo "Instance URL: $(INSTANCE_URL)"
+          esac
 
-    displayName: Determine Salesforce Environment
 
+          echo "Salesforce Environment selected successfully."
 
-# ================================================================
-# 9. DOWNLOAD JWT PRIVATE KEY
-#
-# Azure DevOps:
-# Pipelines
-#   → Library
-#   → Secure files
-#
-# Secure file:
-# server.key
-#
-# DO NOT COMMIT server.key TO GITHUB.
-# ================================================================
+        displayName: 'Determine Salesforce Environment'
 
-  - task: DownloadSecureFile@1
-    name: JWT_KEY
 
-    inputs:
-      secureFile: 'server.key'
+      # ==========================================================
+      # STEP 7
+      # JWT AUTHENTICATION
+      #
+      # IMPORTANT:
+      #
+      # We are NOT using:
+      #
+      # sf org login sfdx-url
+      #
+      # Instead:
+      #
+      # sf org login jwt
+      #
+      # Credentials are selected according to the target branch.
+      # ==========================================================
 
-    displayName: Download JWT Private Key
+      - bash: |
 
+          echo "========================================="
+          echo "Salesforce JWT Authentication"
+          echo "========================================="
 
-# ================================================================
-# 10. PREPARE JWT KEY
-# ================================================================
+          echo "Environment: $(ENV_NAME)"
 
-  - bash: |
 
-      echo "===================================="
-      echo "Preparing JWT Private Key"
-      echo "===================================="
+          KEY_FILE="$(jwtKey.secureFilePath)"
 
-      chmod 600 "$(JWT_KEY.secureFilePath)"
 
-      echo "JWT private key is ready."
+          chmod 600 "$KEY_FILE"
 
-      echo "##vso[task.setvariable variable=JWT_KEY_PATH]$(JWT_KEY.secureFilePath)"
 
-    displayName: Prepare JWT Private Key
+          if [ "$(ENV_NAME)" = "DEV" ]; then
 
+            SF_USERNAME_VALUE="$(SF_USERNAME_DEV)"
+            SF_CLIENT_ID_VALUE="$(SF_CLIENT_ID_DEV)"
 
-# ================================================================
-# 11. JWT AUTHENTICATION
-# ================================================================
+          elif [ "$(ENV_NAME)" = "SIT" ]; then
 
-  - bash: |
+            SF_USERNAME_VALUE="$(SF_USERNAME_SIT)"
+            SF_CLIENT_ID_VALUE="$(SF_CLIENT_ID_SIT)"
 
-      echo "===================================="
-      echo "JWT Authentication"
-      echo "===================================="
+          elif [ "$(ENV_NAME)" = "UAT" ]; then
 
-      echo "Environment: $(ENV_NAME)"
+            SF_USERNAME_VALUE="$(SF_USERNAME_UAT)"
+            SF_CLIENT_ID_VALUE="$(SF_CLIENT_ID_UAT)"
 
-      sf org login jwt \
-        --username "$(SF_USERNAME)" \
-        --jwt-key-file "$(JWT_KEY_PATH)" \
-        --client-id "$(SF_CLIENT_ID)" \
-        --instance-url "$(INSTANCE_URL)" \
-        --alias target-org \
-        --set-default
+          elif [ "$(ENV_NAME)" = "PROD" ]; then
 
-      echo "===================================="
-      echo "Salesforce JWT Login Successful"
-      echo "===================================="
+            SF_USERNAME_VALUE="$(SF_USERNAME_PROD)"
+            SF_CLIENT_ID_VALUE="$(SF_CLIENT_ID_PROD)"
 
-    displayName: JWT Authentication
+          else
 
+            echo "Invalid Salesforce environment."
 
-# ================================================================
-# 12. VERIFY SALESFORCE CONNECTION
-# ================================================================
+            exit 1
 
-  - bash: |
+          fi
 
-      echo "===================================="
-      echo "Salesforce Org Information"
-      echo "===================================="
 
-      sf org display \
-        --target-org target-org
+          echo "Authenticating to Salesforce..."
 
+          sf org login jwt \
+            --username "$SF_USERNAME_VALUE" \
+            --jwt-key-file "$KEY_FILE" \
+            --client-id "$SF_CLIENT_ID_VALUE" \
+            --instance-url "$(INSTANCE_URL)" \
+            --alias "$(SF_ALIAS)" \
+            --set-default
 
-      echo "===================================="
-      echo "Authenticated Orgs"
-      echo "===================================="
 
-      sf org list
+          echo "JWT authentication successful."
 
-    displayName: Verify Salesforce Authentication
+        displayName: 'Authenticate Salesforce Using JWT'
 
 
-# ================================================================
-# 13. DETERMINE DELTA BASELINE
-#
-# PR:
-#
-# origin/develop → HEAD
-#
-# PUSH / MERGE:
-#
-# First parent → HEAD
-#
-# This allows a merge commit to represent the changes
-# introduced by the PR.
-# ================================================================
+      # ==========================================================
+      # STEP 8
+      # VERIFY SALESFORCE ORG
+      # ==========================================================
 
-  - bash: |
+      - bash: |
 
-      if [ "$(Build.Reason)" = "PullRequest" ]; then
+          echo "========================================="
+          echo "Salesforce Org Information"
+          echo "========================================="
 
-        TARGET_BRANCH="$(System.PullRequest.TargetBranch)"
-        TARGET_BRANCH="${TARGET_BRANCH#refs/heads/}"
+          sf org display \
+            --target-org "$(SF_ALIAS)"
 
-        echo "PR Target Branch = $TARGET_BRANCH"
+        displayName: 'Verify Salesforce Authentication'
 
 
-        git fetch origin \
-          "+refs/heads/$TARGET_BRANCH:refs/remotes/origin/$TARGET_BRANCH"
+      # ==========================================================
+      # STEP 9
+      # DETERMINE DELTA RANGE
+      #
+      # PR:
+      #
+      # Compare target branch against PR HEAD.
+      #
+      # Example:
+      #
+      # origin/develop
+      #       ↓
+      #       ↓ compare
+      #       ↓
+      # HEAD
+      #
+      # After merge:
+      #
+      # HEAD~1 → HEAD
+      #
+      # ==========================================================
 
+      - bash: |
 
-        echo "##vso[task.setvariable variable=DELTA_FROM]origin/$TARGET_BRANCH"
+          echo "========================================="
+          echo "Determining Delta Range"
+          echo "========================================="
 
 
-        echo "===================================="
-        echo "Delta Comparison"
-        echo "===================================="
+          if [ "$(Build.Reason)" = "PullRequest" ]; then
 
-        echo "FROM = origin/$TARGET_BRANCH"
-        echo "TO   = HEAD"
+            TARGET_BRANCH="$(System.PullRequest.TargetBranch)"
 
+            TARGET_BRANCH="${TARGET_BRANCH#refs/heads/}"
 
-      else
 
-        echo "Push / Merge build detected."
+            echo "Fetching target branch..."
 
-        # For a merge commit:
-        # compare first parent with current commit.
+            git fetch origin "$TARGET_BRANCH"
 
-        DELTA_FROM="$(git rev-parse HEAD^1)"
 
-        echo "##vso[task.setvariable variable=DELTA_FROM]$DELTA_FROM"
+            FROM_REF="origin/$TARGET_BRANCH"
 
+            TO_REF="HEAD"
 
-        echo "===================================="
-        echo "Delta Comparison"
-        echo "===================================="
 
-        echo "FROM = $DELTA_FROM"
-        echo "TO   = HEAD"
+          else
 
-      fi
+            FROM_REF="HEAD~1"
 
-    displayName: Determine Delta Baseline
+            TO_REF="HEAD"
 
+          fi
 
-# ================================================================
-# 14. DEBUG GIT DELTA
-# ================================================================
 
-  - bash: |
+          echo "Delta FROM = $FROM_REF"
 
-      echo "===================================="
-      echo "GIT DEBUG INFORMATION"
-      echo "===================================="
+          echo "Delta TO   = $TO_REF"
 
 
-      echo "Current commit:"
-      git log -1 --oneline
+          echo "##vso[task.setvariable variable=DELTA_FROM]$FROM_REF"
 
+          echo "##vso[task.setvariable variable=DELTA_TO]$TO_REF"
 
-      echo ""
-      echo "Recent commits:"
-      git log --oneline -10
 
+        displayName: 'Determine Delta Commit Range'
 
-      echo ""
-      echo "Delta FROM:"
-      echo "$(DELTA_FROM)"
 
+      # ==========================================================
+      # STEP 10
+      # GENERATE DELTA PACKAGE
+      #
+      # SGD creates:
+      #
+      # delta/
+      #   |
+      #   +-- package/
+      #   |     |
+      #   |     +-- package.xml
+      #   |
+      #   +-- destructiveChanges/
+      #         |
+      #         +-- destructiveChanges.xml
+      #
+      # ==========================================================
 
-      echo ""
-      echo "Delta TO:"
-      echo "HEAD"
+      - bash: |
 
+          echo "========================================="
+          echo "Generating Salesforce Delta"
+          echo "========================================="
 
-      echo ""
-      echo "Changed files between FROM and HEAD:"
 
-      git diff --name-status "$(DELTA_FROM)" HEAD
+          rm -rf delta
 
+          mkdir -p delta
 
-      echo ""
-      echo "Changes inside force-app:"
 
-      git diff --name-status "$(DELTA_FROM)" HEAD -- force-app
+          sf sgd source delta \
+            --from "$(DELTA_FROM)" \
+            --to "$(DELTA_TO)" \
+            --output-dir delta \
+            --source-dir force-app \
+            --generate-delta
 
 
-      echo ""
-      echo "Git status:"
+          echo ""
+          echo "========================================="
+          echo "Generated package.xml"
+          echo "========================================="
 
-      git status
 
-    displayName: Debug Git Delta
+          if [ -f "delta/package/package.xml" ]; then
 
+            cat delta/package/package.xml
 
-# ================================================================
-# 15. GENERATE DELTA PACKAGE
-# ================================================================
+          else
 
-  - bash: |
+            echo "No package.xml generated."
 
-      echo "===================================="
-      echo "Generating Salesforce Delta"
-      echo "===================================="
+          fi
 
 
-      rm -rf delta
+          echo ""
+          echo "========================================="
+          echo "Generated destructiveChanges.xml"
+          echo "========================================="
 
-      mkdir -p delta
 
+          if [ -f "delta/destructiveChanges/destructiveChanges.xml" ]; then
 
-      sf sgd source delta \
-        --from "$(DELTA_FROM)" \
-        --to HEAD \
-        --output-dir delta \
-        --source-dir force-app \
-        --generate-delta
+            cat delta/destructiveChanges/destructiveChanges.xml
 
+          else
 
-      echo "===================================="
-      echo "Generated Delta Package"
-      echo "===================================="
+            echo "No destructive changes."
 
+          fi
 
-      if [ -f "delta/package/package.xml" ]; then
 
-        cat delta/package/package.xml
+        displayName: 'Generate Salesforce Delta Package'
 
-      else
 
-        echo "No package.xml generated."
+      # ==========================================================
+      # STEP 11
+      # PR VALIDATION
+      #
+      # IMPORTANT:
+      #
+      # This does NOT deploy.
+      #
+      # It validates the metadata and executes Apex tests.
+      #
+      # For sandbox:
+      #
+      #     --dry-run
+      #
+      # ==========================================================
 
-      fi
+      - bash: |
 
+          echo "========================================="
+          echo "Salesforce PR Validation"
+          echo "========================================="
 
-      echo "===================================="
-      echo "Destructive Changes"
-      echo "===================================="
+          echo "Environment: $(ENV_NAME)"
 
 
-      if [ -f "delta/destructiveChanges/destructiveChanges.xml" ]; then
+          if [ ! -f "delta/package/package.xml" ]; then
 
-        cat delta/destructiveChanges/destructiveChanges.xml
+            echo "No package.xml found."
 
-      else
+            echo "No Salesforce metadata changes."
 
-        echo "No destructive changes generated."
+            exit 0
 
-      fi
+          fi
 
-    displayName: Generate Delta Package
 
+          if ! grep -q "<members>" delta/package/package.xml; then
 
-# ================================================================
-# 16. PR VALIDATION
-#
-# IMPORTANT:
-#
-# DEV → NoTestRun
-#
-# We are NOT converting NoTestRun to RunLocalTests.
-#
-# This allows your current LWC-only POC to validate without
-# failing because of unrelated Apex test coverage.
-#
-# SIT → RunLocalTests
-# UAT → RunLocalTests
-# PROD → RunAllTestsInOrg
-# ================================================================
+            echo "No Salesforce metadata changes."
 
-  - bash: |
+            exit 0
 
-      echo "===================================="
-      echo "PR VALIDATION"
-      echo "===================================="
+          fi
 
 
-      if [ -f "delta/package/package.xml" ] && \
-         grep -q "<members>" delta/package/package.xml; then
+          echo ""
+          echo "Running Salesforce validation..."
+          echo "Test Level: $(PR_TEST_LEVEL)"
+          echo ""
 
 
-        VALIDATE_TEST_LEVEL="$(TEST_LEVEL)"
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --target-org "$(SF_ALIAS)" \
+            --test-level "$(PR_TEST_LEVEL)" \
+            --dry-run \
+            --wait 60
 
 
-        echo "Environment: $(ENV_NAME)"
-        echo "Validation Test Level: $VALIDATE_TEST_LEVEL"
+          echo ""
+          echo "Salesforce PR validation successful."
 
 
-        echo "===================================="
-        echo "Validating Salesforce Deployment"
-        echo "===================================="
+        displayName: 'Validate Salesforce Metadata and Run Apex Tests'
 
+        condition: |
+          and(
+            succeeded(),
+            eq(variables['Build.Reason'], 'PullRequest')
+          )
 
-        sf project deploy validate \
-          --manifest delta/package/package.xml \
-          --target-org target-org \
-          --test-level "$VALIDATE_TEST_LEVEL" \
-          --wait 60
 
+      # ==========================================================
+      # STEP 12
+      # ACTUAL DEPLOYMENT
+      #
+      # Runs after PR merge.
+      #
+      # develop → DEV
+      # SIT     → SIT
+      # UAT     → UAT
+      # main    → PROD
+      #
+      # ==========================================================
 
-      else
+      - bash: |
 
-        echo "No Salesforce metadata changes found."
+          echo "========================================="
+          echo "Salesforce Actual Deployment"
+          echo "========================================="
 
-        echo "Skipping validation."
+          echo "Environment: $(ENV_NAME)"
 
-      fi
+          echo "Test Level: $(DEPLOY_TEST_LEVEL)"
 
-    condition: eq(variables['Build.Reason'], 'PullRequest')
 
-    displayName: Validate Delta - Pull Request
+          if [ ! -f "delta/package/package.xml" ]; then
 
+            echo "No package.xml found."
 
-# ================================================================
-# 17. DEPLOY DELTA AFTER MERGE
-#
-# PR:
-#     Validation only
-#
-# MERGE:
-#     Push build
-#     Actual deployment
-#
-# develop → DEV
-# sit     → SIT
-# uat     → UAT
-# main    → PROD
-# ================================================================
+            echo "No Salesforce metadata changes."
 
-  - bash: |
+            exit 0
 
-      echo "===================================="
-      echo "SALESFORCE DEPLOYMENT"
-      echo "===================================="
+          fi
 
 
-      echo "Environment: $(ENV_NAME)"
-      echo "Test Level: $(TEST_LEVEL)"
+          if ! grep -q "<members>" delta/package/package.xml; then
 
+            echo "No Salesforce metadata changes."
 
-      if [ -f "delta/package/package.xml" ] && \
-         grep -q "<members>" delta/package/package.xml; then
+            exit 0
 
+          fi
 
-        echo "===================================="
-        echo "Deploying Delta Package"
-        echo "===================================="
 
+          echo ""
+          echo "Starting Salesforce deployment..."
+          echo ""
 
-        sf project deploy start \
-          --manifest delta/package/package.xml \
-          --target-org target-org \
-          --test-level "$(TEST_LEVEL)" \
-          --wait 60
 
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --target-org "$(SF_ALIAS)" \
+            --test-level "$(DEPLOY_TEST_LEVEL)" \
+            --wait 60
 
-      else
 
-        echo "No Salesforce metadata changes found."
+          echo ""
+          echo "Salesforce deployment successful."
 
-        echo "Skipping deployment."
 
-      fi
+        displayName: 'Deploy Salesforce Delta'
 
-    condition: ne(variables['Build.Reason'], 'PullRequest')
+        condition: |
+          and(
+            succeeded(),
+            ne(variables['Build.Reason'], 'PullRequest')
+          )
 
-    displayName: Deploy Delta to Salesforce
 
+      # ==========================================================
+      # STEP 13
+      # DESTRUCTIVE CHANGES
+      #
+      # Example:
+      #
+      # Developer deletes:
+      #
+      # OldClass.cls
+      #
+      # SGD generates:
+      #
+      # destructiveChanges.xml
+      #
+      # ==========================================================
 
-# ================================================================
-# 18. DEPLOY DESTRUCTIVE CHANGES
-# ================================================================
+      - bash: |
 
-  - bash: |
+          echo "========================================="
+          echo "Checking Destructive Changes"
+          echo "========================================="
 
-      echo "===================================="
-      echo "DESTRUCTIVE CHANGES"
-      echo "===================================="
 
+          if [ ! -f "delta/destructiveChanges/destructiveChanges.xml" ]; then
 
-      if [ -f "delta/destructiveChanges/destructiveChanges.xml" ] && \
-         grep -q "<types>" delta/destructiveChanges/destructiveChanges.xml; then
+            echo "No destructiveChanges.xml found."
 
+            exit 0
 
-        echo "Destructive changes detected."
+          fi
 
 
-        cat delta/destructiveChanges/destructiveChanges.xml
+          if ! grep -q "<types>" \
+            delta/destructiveChanges/destructiveChanges.xml; then
 
+            echo "No destructive metadata found."
 
-        sf project deploy start \
-          --manifest delta/destructiveChanges/package.xml \
-          --post-destructive-changes delta/destructiveChanges/destructiveChanges.xml \
-          --target-org target-org \
-          --test-level NoTestRun \
-          --wait 30
+            exit 0
 
+          fi
 
-      else
 
-        echo "No destructive changes found."
+          echo ""
+          echo "Destructive changes detected:"
+          echo ""
 
-        echo "Skipping destructive deployment."
 
-      fi
+          cat delta/destructiveChanges/destructiveChanges.xml
 
-    condition: ne(variables['Build.Reason'], 'PullRequest')
 
-    displayName: Deploy Destructive Changes
+          echo ""
+          echo "Deploying destructive changes..."
+          echo ""
+
+
+          sf project deploy start \
+            --manifest delta/package/package.xml \
+            --post-destructive-changes \
+              delta/destructiveChanges/destructiveChanges.xml \
+            --target-org "$(SF_ALIAS)" \
+            --test-level "$(DEPLOY_TEST_LEVEL)" \
+            --wait 60
+
+
+          echo ""
+          echo "Destructive deployment successful."
+
+
+        displayName: 'Deploy Destructive Changes'
+
+        condition: |
+          and(
+            succeeded(),
+            ne(variables['Build.Reason'], 'PullRequest')
+          )

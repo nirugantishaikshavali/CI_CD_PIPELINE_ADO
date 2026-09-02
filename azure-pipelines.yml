@@ -1,16 +1,22 @@
 # ================================================================
 # SALESFORCE CI/CD PIPELINE
 #
-# GitHub
-#   ↓
-# Azure DevOps Pipeline
-#   ↓
-# JWT Authentication
-#   ↓
-# Delta Generation
-#   ↓
-# PR = Validate
-# Merge/Push = Deploy
+# FLOW:
+#
+# Developer Feature Branch
+#          ↓
+#        Pull Request
+#          ↓
+#     Azure Validation
+#          ↓
+#     Manager Approval
+#          ↓
+#        PR Merge
+#          ↓
+#     Azure Deployment
+#          ↓
+#       Salesforce
+#
 #
 # BRANCH → SALESFORCE ORG
 #
@@ -53,7 +59,7 @@ pr:
 # Variable Group:
 # Salesforce-CICD-Secrets
 #
-# Variables required:
+# Required variables:
 #
 # SF_USERNAME_DEV
 # SF_CLIENT_ID_DEV
@@ -67,11 +73,10 @@ pr:
 # SF_USERNAME_PROD
 # SF_CLIENT_ID_PROD
 #
-# Mark username/client-id values as secret if required
-# according to your organization's security policy.
 # ================================================================
 
 variables:
+
   - group: Salesforce-CICD-Secrets
 
   - name: SGD_VERSION
@@ -103,9 +108,9 @@ steps:
 # 5. INSTALL NODE.JS
 # ================================================================
 
-  - task: NodeTool@0
+  - task: UseNode@1
     inputs:
-      versionSpec: '22.x'
+      version: '22.x'
 
     displayName: Install Node.js
 
@@ -114,7 +119,7 @@ steps:
 # 6. INSTALL SALESFORCE CLI
 # ================================================================
 
-  - script: |
+  - bash: |
 
       echo "===================================="
       echo "Installing Salesforce CLI"
@@ -135,7 +140,7 @@ steps:
 # 7. INSTALL SFDX-GIT-DELTA
 # ================================================================
 
-  - script: |
+  - bash: |
 
       echo "===================================="
       echo "Installing sfdx-git-delta"
@@ -154,22 +159,6 @@ steps:
 
 # ================================================================
 # 8. DETERMINE TARGET ENVIRONMENT
-#
-# PR:
-#
-# feature/lwc-5298
-#       ↓
-#     develop
-#       ↓
-#      DEV
-#
-#
-# PUSH / MERGE:
-#
-# develop → DEV
-# sit     → SIT
-# uat     → UAT
-# main    → PROD
 # ================================================================
 
   - bash: |
@@ -222,8 +211,6 @@ steps:
 
         echo "##vso[task.setvariable variable=INSTANCE_URL]https://test.salesforce.com"
 
-        # IMPORTANT:
-        # Correct Azure DevOps logging command syntax.
         echo "##vso[task.setvariable variable=SF_USERNAME;issecret=true]$(SF_USERNAME_DEV)"
 
         echo "##vso[task.setvariable variable=SF_CLIENT_ID;issecret=true]$(SF_CLIENT_ID_DEV)"
@@ -314,27 +301,13 @@ steps:
 #   → Library
 #   → Secure files
 #
-# Upload:
-#   server.key
+# Secure file:
+# server.key
 #
-# IMPORTANT:
 # DO NOT COMMIT server.key TO GITHUB.
-#
-# For this POC, the same server.key can be used for:
-#
-# DEV
-# SIT
-# UAT
-# PROD
-#
-# Each environment still has its own:
-#
-# Username
-# Client ID
 # ================================================================
 
   - task: DownloadSecureFile@1
-
     name: JWT_KEY
 
     inputs:
@@ -364,17 +337,6 @@ steps:
 
 # ================================================================
 # 11. JWT AUTHENTICATION
-#
-# Modern Salesforce CLI:
-#
-# sf org login jwt
-#
-# Required:
-#
-# username
-# client-id
-# jwt-key-file
-# instance-url
 # ================================================================
 
   - bash: |
@@ -392,7 +354,6 @@ steps:
         --instance-url "$(INSTANCE_URL)" \
         --alias target-org \
         --set-default
-
 
       echo "===================================="
       echo "Salesforce JWT Login Successful"
@@ -431,11 +392,12 @@ steps:
 #
 # origin/develop → HEAD
 #
-# PUSH:
+# PUSH / MERGE:
 #
-# HEAD~1 → HEAD
+# First parent → HEAD
 #
-# For our POC this is sufficient.
+# This allows a merge commit to represent the changes
+# introduced by the PR.
 # ================================================================
 
   - bash: |
@@ -465,10 +427,11 @@ steps:
 
       else
 
-        echo "Push build detected."
+        echo "Push / Merge build detected."
 
-        # For a merge commit, compare the first parent
-        # with the current commit.
+        # For a merge commit:
+        # compare first parent with current commit.
+
         DELTA_FROM="$(git rev-parse HEAD^1)"
 
         echo "##vso[task.setvariable variable=DELTA_FROM]$DELTA_FROM"
@@ -483,22 +446,11 @@ steps:
 
       fi
 
-      
-
     displayName: Determine Delta Baseline
 
 
 # ================================================================
-# 14. GENERATE DELTA PACKAGE
-#
-# Output:
-#
-# delta/
-#   package/
-#     package.xml
-#
-#   destructiveChanges/
-#     destructiveChanges.xml
+# 14. DEBUG GIT DELTA
 # ================================================================
 
   - bash: |
@@ -507,40 +459,56 @@ steps:
       echo "GIT DEBUG INFORMATION"
       echo "===================================="
 
+
       echo "Current commit:"
       git log -1 --oneline
+
 
       echo ""
       echo "Recent commits:"
       git log --oneline -10
 
+
       echo ""
       echo "Delta FROM:"
       echo "$(DELTA_FROM)"
+
 
       echo ""
       echo "Delta TO:"
       echo "HEAD"
 
+
       echo ""
       echo "Changed files between FROM and HEAD:"
+
       git diff --name-status "$(DELTA_FROM)" HEAD
+
 
       echo ""
       echo "Changes inside force-app:"
+
       git diff --name-status "$(DELTA_FROM)" HEAD -- force-app
+
 
       echo ""
       echo "Git status:"
+
       git status
 
     displayName: Debug Git Delta
+
+
+# ================================================================
+# 15. GENERATE DELTA PACKAGE
+# ================================================================
 
   - bash: |
 
       echo "===================================="
       echo "Generating Salesforce Delta"
       echo "===================================="
+
 
       rm -rf delta
 
@@ -590,23 +558,20 @@ steps:
 
 
 # ================================================================
-# 15. VALIDATE DURING PULL REQUEST
+# 16. PR VALIDATION
 #
-# PR = VALIDATION ONLY
+# IMPORTANT:
 #
-# No actual deployment.
+# DEV → NoTestRun
 #
-# DEV:
-#   PR validation → RunLocalTests
+# We are NOT converting NoTestRun to RunLocalTests.
 #
-# SIT:
-#   RunLocalTests
+# This allows your current LWC-only POC to validate without
+# failing because of unrelated Apex test coverage.
 #
-# UAT:
-#   RunLocalTests
-#
-# PROD:
-#   RunAllTestsInOrg
+# SIT → RunLocalTests
+# UAT → RunLocalTests
+# PROD → RunAllTestsInOrg
 # ================================================================
 
   - bash: |
@@ -623,15 +588,13 @@ steps:
         VALIDATE_TEST_LEVEL="$(TEST_LEVEL)"
 
 
-        if [ "$VALIDATE_TEST_LEVEL" = "NoTestRun" ]; then
-
-          VALIDATE_TEST_LEVEL="RunLocalTests"
-
-        fi
-
-
         echo "Environment: $(ENV_NAME)"
         echo "Validation Test Level: $VALIDATE_TEST_LEVEL"
+
+
+        echo "===================================="
+        echo "Validating Salesforce Deployment"
+        echo "===================================="
 
 
         sf project deploy validate \
@@ -655,9 +618,14 @@ steps:
 
 
 # ================================================================
-# 16. DEPLOY DELTA AFTER MERGE
+# 17. DEPLOY DELTA AFTER MERGE
 #
-# PUSH = ACTUAL DEPLOYMENT
+# PR:
+#     Validation only
+#
+# MERGE:
+#     Push build
+#     Actual deployment
 #
 # develop → DEV
 # sit     → SIT
@@ -671,12 +639,18 @@ steps:
       echo "SALESFORCE DEPLOYMENT"
       echo "===================================="
 
+
       echo "Environment: $(ENV_NAME)"
       echo "Test Level: $(TEST_LEVEL)"
 
 
       if [ -f "delta/package/package.xml" ] && \
          grep -q "<members>" delta/package/package.xml; then
+
+
+        echo "===================================="
+        echo "Deploying Delta Package"
+        echo "===================================="
 
 
         sf project deploy start \
@@ -700,19 +674,7 @@ steps:
 
 
 # ================================================================
-# 17. DEPLOY DESTRUCTIVE CHANGES
-#
-# Handles deleted metadata.
-#
-# Example:
-#
-# Developer deletes:
-#
-# MyTrigger.trigger-meta.xml
-#
-# SGD generates:
-#
-# destructiveChanges.xml
+# 18. DEPLOY DESTRUCTIVE CHANGES
 # ================================================================
 
   - bash: |
